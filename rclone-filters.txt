@@ -1,0 +1,38 @@
+# VCS / tooling
+- .git/**
+- **/.git/**
+- node_modules/**
+- **/node_modules/**
+- __pycache__/**
+- **/__pycache__/**
+- .venv/**
+- **/.venv/**
+- .cache/**
+- **/.cache/**
+- .antigravitycli/**
+- **/.antigravitycli/**
+- .claude/**
+- **/.claude/**
+- .agents/**
+- **/.agents/**
+- .gemini/**
+- **/.gemini/**
+
+# OnlyOffice / LibreOffice lock & temp
+- .~lock.*
+- **/.~lock.*
+- .~*
+- **/.~*
+- ~$*
+- **/~$*
+- *.tmp
+- **/*.tmp
+- *.swp
+- **/*.swp
+- .*.sw?
+
+# OS junk
+- .DS_Store
+- **/.DS_Store
+- Thumbs.db
+- **/Thumbs.db
