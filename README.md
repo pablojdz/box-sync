@@ -88,12 +88,14 @@ Or:
 "$HOME/.scripts/box-sync/box_sync.sh"
 ```
 
+Documents and Downloads sync **in parallel** (two `rclone` processes at once).
+
 On an interactive terminal, the script shows a minimal progress UI (Unicode bar per target):
 
-- During a real upload, the bar tracks rclone's actual byte percentage (parsed from `--stats=1s` output in the log).
+- During a real upload, the bar tracks rclone's actual byte percentage (parsed from `--stats=1s` output in a per-target temp log).
 - While rclone is only comparing files (no bytes to transfer), the bar fills with a smooth time-based estimate.
 
-rclone transfer details go to the log file, not the console. Non-TTY runs (e.g. cron/systemd) print plain status lines instead.
+rclone transfer details are appended into the shared log file when each target finishes, not printed to the console. Non-TTY runs (e.g. cron/systemd) print plain status lines instead.
 
 Exit code is the number of failed sync targets (`0` = success).
 

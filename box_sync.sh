@@ -1,12 +1,13 @@
 #!/bin/bash
-# Cloud backup: Documents and Downloads → Box
+# Cloud backup: Documents and Downloads → Box (parallel)
 # ─────────────────────────────────────────────
 
 set -euo pipefail
 
-LOG="$HOME/.scripts/box-sync-log/box-sync.log"
+LOG_DIR="$HOME/.scripts/box-sync-log"
+LOG="$LOG_DIR/box-sync.log"
 FILTERS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rclone-filters.txt"
-mkdir -p "$(dirname "$LOG")"
+mkdir -p "$LOG_DIR"
 
 BAR_WIDTH=18
 IS_TTY=0
@@ -34,13 +35,28 @@ declare -a T_REMOTE=("box:Fedora/Documents" "box:Fedora/Downloads")
 declare -a T_STATE=(waiting waiting)
 declare -a T_ELAPSED=("" "")
 declare -a T_RATIO=(0 0)
+declare -a T_PID=()
+declare -a T_T0=()
+declare -a T_TMPLOG=()
 N_TARGETS=${#T_NAME[@]}
 DASH_DRAWN=0
 LAST_FRAME=""
 
 cursor_hide() { (( IS_TTY )) && printf '\033[?25l'; }
 cursor_show() { (( IS_TTY )) && printf '\033[?25h'; }
-cleanup() { cursor_show; }
+
+cleanup() {
+  local i pid
+  for ((i = 0; i < N_TARGETS; i++)); do
+    pid="${T_PID[$i]:-}"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+    [[ -n "${T_TMPLOG[$i]:-}" && -f "${T_TMPLOG[$i]}" ]] && rm -f "${T_TMPLOG[$i]}"
+  done
+  cursor_show
+}
 trap cleanup EXIT INT TERM
 
 log_file() {
@@ -67,11 +83,12 @@ ease_ratio() {
   awk -v t="$1" 'BEGIN { r = 1 - exp(-t / 25.0); if (r > 0.92) r = 0.92; printf "%.4f", r }'
 }
 
-# read the latest byte-transfer percent rclone wrote to the log for this run.
+# read the latest byte-transfer percent rclone wrote to a per-target log.
 # Prints the percent (0-100) when a real transfer is in progress, else nothing.
 read_pct() {
-  local off="$1"
-  tail -n +"$((off + 1))" "$LOG" 2>/dev/null | awk '
+  local logfile="$1"
+  [[ -f "$logfile" ]] || return 0
+  awk '
     /Transferred:/ && /%/ {
       line = $0
       while (match(line, /[0-9]+%/)) {
@@ -79,7 +96,8 @@ read_pct() {
         line = substr(line, RSTART + RLENGTH)
       }
     }
-    END { if (p != "") { sub(/%/, "", p); print p } }'
+    END { if (p != "") { sub(/%/, "", p); print p } }
+  ' "$logfile"
 }
 
 row_line() {
@@ -162,71 +180,80 @@ draw_dashboard() {
 }
 
 run_rclone() {
-  local src="$1" remote="$2"
+  local src="$1" remote="$2" logfile="$3"
   rclone sync "$src" "$remote" \
     --filter-from="$FILTERS" \
     --skip-links \
     --stats=1s \
     --stats-one-line \
-    --log-file="$LOG" \
+    --log-file="$logfile" \
     --log-level INFO
 }
 
-sync_target() {
+append_target_log() {
   local idx="$1"
-  local t0 t1 rc log_off pct
+  local tmp="${T_TMPLOG[$idx]:-}"
+  {
+    echo "=== ${T_NAME[$idx]} ==="
+    [[ -n "$tmp" && -f "$tmp" ]] && cat "$tmp"
+    echo
+  } >> "$LOG"
+  [[ -n "$tmp" && -f "$tmp" ]] && rm -f "$tmp"
+  T_TMPLOG[$idx]=""
+}
+
+finalize_target() {
+  local idx="$1"
+  local rc=0
+  local t1
+
+  wait "${T_PID[$idx]}" || rc=$?
+  t1=$(date +%s)
+
+  if [[ $rc -eq 0 ]]; then
+    T_STATE[$idx]=ok
+    T_ELAPSED[$idx]="$((t1 - T_T0[$idx]))s"
+    if (( ! IS_TTY )); then
+      printf "  ok %s (%s)\n" "${T_NAME[$idx]}" "${T_ELAPSED[$idx]}"
+    fi
+  else
+    T_STATE[$idx]=fail
+    ((FAILURES++)) || true
+    if (( ! IS_TTY )); then
+      printf "  failed %s\n" "${T_NAME[$idx]}"
+    fi
+  fi
+
+  append_target_log "$idx"
+  T_PID[$idx]=""
+}
+
+update_progress() {
+  local idx="$1"
+  local pct
+
+  pct=$(read_pct "${T_TMPLOG[$idx]}")
+  if [[ -n "$pct" ]]; then
+    T_RATIO[$idx]=$(awk -v p="$pct" 'BEGIN { printf "%.4f", p / 100 }')
+  else
+    T_RATIO[$idx]=$(ease_ratio "$(( $(date +%s) - T_T0[$idx] ))")
+  fi
+}
+
+start_target() {
+  local idx="$1"
 
   T_STATE[$idx]=syncing
   T_RATIO[$idx]=0
-  t0=$(date +%s)
-  log_off=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+  T_T0[$idx]=$(date +%s)
+  T_TMPLOG[$idx]=$(mktemp "$LOG_DIR/box-sync-${T_NAME[$idx]}.XXXXXX")
 
   if (( ! IS_TTY )); then
     printf "  syncing %s...\n" "${T_NAME[$idx]}"
-    if run_rclone "${T_SRC[$idx]}" "${T_REMOTE[$idx]}"; then
-      t1=$(date +%s)
-      T_STATE[$idx]=ok
-      T_ELAPSED[$idx]="$((t1 - t0))s"
-      printf "  ok %s (%s)\n" "${T_NAME[$idx]}" "${T_ELAPSED[$idx]}"
-      return 0
-    else
-      T_STATE[$idx]=fail
-      printf "  failed %s\n" "${T_NAME[$idx]}"
-      return 1
-    fi
   fi
 
-  draw_dashboard
-
-  run_rclone "${T_SRC[$idx]}" "${T_REMOTE[$idx]}" &
-  local pid=$!
-
-  while kill -0 "$pid" 2>/dev/null; do
-    pct=$(read_pct "$log_off")
-    if [[ -n "$pct" ]]; then
-      # Real byte progress available (large upload in flight).
-      T_RATIO[$idx]=$(awk -v p="$pct" 'BEGIN { printf "%.4f", p / 100 }')
-    else
-      # Checking phase / nothing to transfer: smooth time-based fill.
-      T_RATIO[$idx]=$(ease_ratio "$(( $(date +%s) - t0 ))")
-    fi
-    draw_dashboard
-    sleep 0.5
-  done
-
-  rc=0
-  wait "$pid" || rc=$?
-
-  t1=$(date +%s)
-  if [[ $rc -eq 0 ]]; then
-    T_STATE[$idx]=ok
-    T_ELAPSED[$idx]="$((t1 - t0))s"
-  else
-    T_STATE[$idx]=fail
-  fi
-  draw_dashboard
-
-  return "$rc"
+  run_rclone "${T_SRC[$idx]}" "${T_REMOTE[$idx]}" "${T_TMPLOG[$idx]}" &
+  T_PID[$idx]=$!
 }
 
 # ── main ──────────────────────────────────────
@@ -240,11 +267,41 @@ if (( IS_TTY )); then
   draw_dashboard
 fi
 
+# Launch all targets in parallel
 for ((i = 0; i < N_TARGETS; i++)); do
-  sync_target "$i" || ((FAILURES++)) || true
+  start_target "$i"
+done
+
+if (( IS_TTY )); then
+  draw_dashboard
+fi
+
+# Poll until every target finishes
+while true; do
+  local_running=0
+  for ((i = 0; i < N_TARGETS; i++)); do
+    [[ "${T_STATE[$i]}" == syncing ]] || continue
+    if kill -0 "${T_PID[$i]}" 2>/dev/null; then
+      update_progress "$i"
+      local_running=1
+    else
+      finalize_target "$i"
+    fi
+  done
+
+  if (( IS_TTY )); then
+    draw_dashboard
+  fi
+
+  (( local_running )) || break
+  sleep 0.5
 done
 
 footer
 log_file "Box Sync finished"
+
+# Prevent cleanup from reaping already-finished pids
+trap - EXIT INT TERM
+cursor_show
 
 exit "$FAILURES"
