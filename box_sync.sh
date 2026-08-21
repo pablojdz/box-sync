@@ -4,10 +4,15 @@
 
 set -euo pipefail
 
-LOG_DIR="$HOME/.scripts/box-sync-log"
+LOG_DIR="/var/log/box-sync"
 LOG="$LOG_DIR/box-sync.log"
 FILTERS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rclone-filters.txt"
-mkdir -p "$LOG_DIR"
+
+if [[ ! -d "$LOG_DIR" || ! -w "$LOG_DIR" ]]; then
+  echo "Cannot write to $LOG_DIR. Create it once with:" >&2
+  echo "  sudo mkdir -p $LOG_DIR && sudo chown \"\$USER:\$USER\" $LOG_DIR" >&2
+  exit 1
+fi
 
 BAR_WIDTH=18
 IS_TTY=0
@@ -246,7 +251,7 @@ start_target() {
   T_STATE[$idx]=syncing
   T_RATIO[$idx]=0
   T_T0[$idx]=$(date +%s)
-  T_TMPLOG[$idx]=$(mktemp "$LOG_DIR/box-sync-${T_NAME[$idx]}.XXXXXX")
+  T_TMPLOG[$idx]=$(mktemp "/tmp/box-sync-${T_NAME[$idx]}.XXXXXX")
 
   if (( ! IS_TTY )); then
     printf "  syncing %s...\n" "${T_NAME[$idx]}"

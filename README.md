@@ -11,7 +11,7 @@ Local folders are the **source of truth**. The script mirrors them to Box with `
 | `~/Documents` | `box:Fedora/Documents` |
 | `~/Downloads` | `box:Fedora/Downloads` |
 
-Logs: `~/.scripts/box-sync-log/box-sync.log`
+Logs: `/var/log/box-sync/box-sync.log` (create the directory once: `sudo mkdir -p /var/log/box-sync && sudo chown "$USER:$USER" /var/log/box-sync`)
 
 ## Requirements
 
